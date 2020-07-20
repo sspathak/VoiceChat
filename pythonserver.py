@@ -4,7 +4,11 @@ import socket
 import pickle
 import sys
 from threading import Thread, Lock, Condition
+from time import sleep
 # enable socket connections
+
+SOCK_IP = '0.0.0.0'
+SOCK_PORT = 9001
 
 all_clients = []
 mutex = Lock()
@@ -17,10 +21,14 @@ def client_handler(client_id):
         all_clients.append((client_id, cl_name))
 
     while True:
+        sleep(0.01)
         # receive data
         jsn_s = clientsocket.recv(2**16)
         print(f"received jsn_s = {len(jsn_s)}")
-        packet = pickle.loads(jsn_s)
+        try:
+            packet = pickle.loads(jsn_s)
+        except:
+            continue
         print(f"data received source:{packet[0]} destinaiton{packet[1]}")
         destsock = None
         for cl in all_clients:
@@ -38,8 +46,8 @@ def client_handler(client_id):
 # will we create threads dynamically
 # each new connection causes a new thread to be created
 serversocket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-print(f"binding socket on {'0.0.0.0'}:9000")
-serversocket.bind(('0.0.0.0', 9000))
+print(f"binding socket on {SOCK_IP}:{SOCK_PORT}")
+serversocket.bind((SOCK_IP, SOCK_PORT))
 serversocket.listen(3)
 
 # now connect to the web server on port 80 - the normal http port

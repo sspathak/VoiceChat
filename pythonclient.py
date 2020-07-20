@@ -13,8 +13,8 @@ import numpy as np
 source_name = str(input("enter source name"))
 print(f"hello {source_name}")
 destination_name = str(input("enter destination name"))
-SERVER_IP = '0.0.0.0'
-SERVER_PORT = 9000
+SERVER_IP = '35.237.61.15'
+SERVER_PORT = 9001
 running = True
 mutex_t = Lock()
 item_available = Condition()
