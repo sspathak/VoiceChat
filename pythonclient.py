@@ -54,7 +54,7 @@ def record(t):
     # print(sys.getsizeof(pickle.dumps(recorded_array)))
     # sd.play(recorded_array, 44100)
     # sd.wait()
-    # sd.get_status()
+    # sd.get_status()ª
     # recorded_array = [0]*int(t * 440)
     return recorded_array
 
