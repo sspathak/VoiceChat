@@ -1,8 +1,8 @@
 print("server has started")
 
 import socket
-import json
 import pickle
+import sys
 from threading import Thread, Lock, Condition
 # enable socket connections
 
@@ -18,7 +18,7 @@ def client_handler(client_id):
 
     while True:
         # receive data
-        jsn_s = clientsocket.recv(2**20)
+        jsn_s = clientsocket.recv(2**16)
         print(f"received jsn_s = {len(jsn_s)}")
         packet = pickle.loads(jsn_s)
         print(f"data received source:{packet[0]} destinaiton{packet[1]}")
@@ -49,6 +49,7 @@ while True:
         thrd1 = Thread(target=client_handler, args=client_id)
         thrd1.start()
     except KeyboardInterrupt:
+        serversocket.close()
         break
 
 

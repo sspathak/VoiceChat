@@ -43,29 +43,14 @@ class SharedBuf:
 
 def record(t):
     # record t seconds of audio
-    # recorded_array = sd.rec(int(t*44100), samplerate=44100, channels=1, dtype='float32')
     recorded_array = sdstream.read(int(t*44100))
-    # print(f"recorded array = {recorded_array[0]}")
-    # sdstream.write(recorded_array[0])
-    # print(f"recorded array = {recorded_array}")
-    # print(f"read available = {sdstream.read_available}")
-    # sd.wait()
-    # print(recorded_array)
-    # print(sys.getsizeof(pickle.dumps(recorded_array)))
-    # sd.play(recorded_array, 44100)
-    # sd.wait()
-    # sd.get_status()ª
-    # recorded_array = [0]*int(t * 440)
     return recorded_array
 
 def transmit(buf, socket):
     packet = (source_name, destination_name, buf)
-    # print(f"buffer state = {buf}")
     jsn = pickle.dumps(packet)
     print(f"\tsending packet of size = {sys.getsizeof(jsn)}B from {source_name} to {destination_name}")
     socket.send(jsn)
-
-
 
 def record_transmit_thread(serversocket):
     # maintains a transmit buffer
@@ -125,7 +110,7 @@ def receive_play_thread(serversocket):
             sleep(0.01)
             with audio_available:
                 # produce() # receive audio
-                jsn = serversocket.recv(2**20)
+                jsn = serversocket.recv(2**16)
 
                 src_n, dst_n, buf = pickle.loads(jsn)
                 print(f"\t\t\t\t\t\tdata received from {src_n}, dest {dst_n} data:{len(buf)}")
@@ -169,16 +154,18 @@ def receive_play_thread(serversocket):
 
 
 def main():
+    serversocket = connect()
     try:
-        serversocket = (connect(),)
-        t_thread = Thread(target=record_transmit_thread, args=serversocket)
+
+        t_thread = Thread(target=record_transmit_thread, args=(serversocket,))
         # start thread record_transmit
-        p_thread = Thread(target=receive_play_thread, args=serversocket)
+        p_thread = Thread(target=receive_play_thread, args=(serversocket,))
         # start thread receive_play
 
         t_thread.start()
         p_thread.start()
     except KeyboardInterrupt:
+        serversocket.close()
         global running
         running = False
         return
