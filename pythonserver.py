@@ -1,79 +1,98 @@
-print("server has started")
-
-import socket
-import pickle
-import sys
-from threading import Thread, Lock, Condition
 from time import sleep
-# enable socket connections
+from threading import Thread, Lock, Condition
+import pickle
+import socket
 
 SOCK_IP = '0.0.0.0'
 SOCK_PORT = 9001
 
-all_clients = []
-mutex = Lock()
-def client_handler(client_id):
-    global serversocket
-    clientsocket, address = client_id
-    cl_name = (clientsocket.recv(1024).decode())
-    print(f"new client connected {cl_name}")
-    with mutex:
-        all_clients.append((client_id, cl_name))
+class Client:
+    allClients = []
+    availableClients = {}  # {'client name' : client object}
+
+
+    def __init__(self, client_ptr):
+        Client.allClients.append(self)
+        self.cl_ptr = client_ptr
+        self.name = None
+        self.name = self.get_name()
+        self.recipient_name = None
+        self.recipient_name = self.get_recipient_name()
+        print(f"received name {self.name} and recipient {self.recipient_name}")
+        Client.availableClients[self.name] = self
+        cl = None
+        while True:
+            try:
+                cl = Client.availableClients[self.recipient_name]
+                if cl.get_recipient_name() == self.name:
+                    break
+                else:
+                    print("recipient busy.")
+                    sleep(1)
+            except KeyError:
+                print("waiting...")
+                sleep(1)
+                continue
+        if cl is not None:
+            # found a client who wants to connect to self
+            self.cl_ptr[0].send('go'.encode())
+            self.converse(cl)
+        self.close()
+
+    # Enter a loop to keep searching for recipient in available clients
+
+    def get_name(self):
+        if self.name is None:
+            # receive name
+            self.name = self.cl_ptr[0].recv(512).decode().rstrip()
+            print(f"Client connected: {self.name}")
+        return self.name
+
+    def get_recipient_name(self):
+        if self.recipient_name is None:
+            # receive recipient name
+            self.recipient_name = self.cl_ptr[0].recv(512).decode().rstrip()
+            print(f"Client {self.name} wants to connect to {self.recipient_name}")
+        return self.recipient_name
+
+    # def getRecipientSocket(self):
+    #     search list of available clients
+
+    def converse(self, recipient_obj):
+        print("establishing connection...")
+        try:
+            while True:
+                self.send(recipient_obj, self.read())
+        except KeyboardInterrupt:
+            self.close()
+
+    def send(self, cl_object, data):
+        cl_object.cl_ptr[0].send(data)
+
+    def read(self):
+        return self.cl_ptr[0].recv(1024)
+
+    def close(self):
+        Client.allClients.remove(self)
+        Client.availableClients.pop(self.get_name(), None)
+        self.cl_ptr[0].close()
+
+def main():
+    serversocket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    print(f"binding socket on {SOCK_IP}:{SOCK_PORT}")
+    serversocket.bind((SOCK_IP, SOCK_PORT))
+    serversocket.listen(3)
 
     while True:
-        sleep(0.01)
-        # receive data
-        jsn_s = clientsocket.recv(2**16)
-        print(f"received jsn_s = {len(jsn_s)}")
         try:
-            packet = pickle.loads(jsn_s)
-        except:
-            continue
-        print(f"data received source:{packet[0]} destinaiton{packet[1]}")
-        destsock = None
-        for cl in all_clients:
-            if cl[-1] == packet[1]:
-                destsock = cl
-        if destsock is None:
-            print("\tINVALID CLIENT")
-        else:
-            print(f"\tdata sent to {destsock[-1]}")
-            destsock[0][0].send(jsn_s)
+            client_id = (serversocket.accept(),)
+            thrd1 = Thread(target=client_handler, args=client_id)
+            thrd1.start()
+        except KeyboardInterrupt:
+            serversocket.close()
+            break
 
+def client_handler(clientid):
+    Client(clientid)
 
-
-
-# will we create threads dynamically
-# each new connection causes a new thread to be created
-serversocket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-print(f"binding socket on {SOCK_IP}:{SOCK_PORT}")
-serversocket.bind((SOCK_IP, SOCK_PORT))
-serversocket.listen(3)
-
-# now connect to the web server on port 80 - the normal http port
-while True:
-    try:
-        client_id = (serversocket.accept(),)
-        thrd1 = Thread(target=client_handler, args=client_id)
-        thrd1.start()
-    except KeyboardInterrupt:
-        serversocket.close()
-        break
-
-
-
-# allow async connections
-# the architecture of the server needs to be such that multiple clients can connect to it
-# without them affecting other connections
-
-
-# client is sending and receiving audio in parallel
-# server is receiving packets and immediately forwarding them to the other side concurrently
-
-
-# first start with a minimum number of connected users (2)
-
-# disable socket connections
-
-
-print("server has ended")
+main()
