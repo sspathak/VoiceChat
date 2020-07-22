@@ -18,14 +18,14 @@ import numpy as np
 
 
 
-# SERVER_IP = '35.237.61.15'
-SERVER_IP = '0.0.0.0'
+SERVER_IP = '35.237.61.15'
+# SERVER_IP = '0.0.0.0'
 SERVER_PORT = 9001
-BUFMAX = 256
+BUFMAX = 512
 running = True
 mutex_t = Lock()
 item_available = Condition()
-SLEEPTIME = 0.001
+SLEEPTIME = 0.0001
 audio_available = Condition()
 
 sdstream = sd.Stream(samplerate=44100, channels=1, dtype='float32')
@@ -58,7 +58,7 @@ class SharedBuf:
 def record(t):
     # record t seconds of audio
     recorded_array = sdstream.read(t)
-    print(f"\t\t\t\t\t\t\tAUDIO_INPUT______:{len(recorded_array[0])}")
+    # print(f"\t\t\t\t\t\t\tAUDIO_INPUT______:{len(recorded_array[0])}")
     return recorded_array[0]
 
 
@@ -66,7 +66,7 @@ def transmit(buf, socket):
     # buf = [0]*10
     packet = buf
     jsn = pickle.dumps(packet)
-    print(f"_____OUTPUT of length = {sys.getsizeof(jsn)}B, {len(jsn)}Chars")
+    # print(f"_____OUTPUT of length = {sys.getsizeof(jsn)}B, {len(jsn)}Chars")
     socket.send(jsn)
 
 
@@ -98,7 +98,7 @@ def record_transmit_thread(serversocket):
             with item_available:
                 # print(f"buffer len = {buf.getlen()}")
                 item_available.wait_for(lambda: buf.getlen() >= 32)
-                print(f"length of buffer before transmission = {buf.getlen()}")
+                # print(f"length of buffer before transmission = {buf.getlen()}")
                 # consume() # send audio
 
                 transmit(buf.getx(32), serversocket)
@@ -134,9 +134,14 @@ def receive_play_thread(serversocket):
             # print("!!! recv loop !!!")
             # sleep(1)
             sleep(SLEEPTIME)
-            jsn += serversocket.recv(281)
-            print(f"INPUT______ of len = {sys.getsizeof(jsn)} ::{jsn[:281]}")
-            buf = pickle.loads(jsn[:281])
+            while sys.getsizeof(jsn) < 314:
+                jsn += serversocket.recv(281)
+
+            try:
+                buf = pickle.loads(jsn[:281])
+            except pickle.UnpicklingError:
+                print("@@@@@ UNPICKLE ERROR @@@@@")
+                print(f"INPUT______ of len = {sys.getsizeof(jsn)} ::{jsn[:281]}")
             jsn = jsn[281:]
 
             with audio_available:
@@ -148,7 +153,7 @@ def receive_play_thread(serversocket):
                 buff.extbuf(buf)
                 audio_available.notify()
             print(f"<<<<<<<<<<receiver released lock. buf length = {buff.getlen()}")
-        print("RECEIVER ENDS HHERE")
+        print("RECEIVER ENDS HERE")
 
     def player_consumer(buff):
         while running:
@@ -163,7 +168,7 @@ def receive_play_thread(serversocket):
                 # consume() # play audio
                 # b.extend(buff.getx(32))
 
-                play(buff.getx(32))
+                play(buff.getx(buff.getlen()))
                 audio_available.notify()
                 # buff.clearbuf()
             # play(b)
