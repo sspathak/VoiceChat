@@ -1,6 +1,10 @@
 # VoiceChat
 a Python voice chat app that uses websockets to send data between a multi-threaded client and server
 
+# Setup
+- install python-sounddevice `python3 -m pip install sounddevice --user`
+- install numpy `pip install numpy`
+
 # Client
 The client creates two threads - record-transmit and recieve-play.
 Each thread creates two more threads that simultaneously fill and empty a shared buffer
