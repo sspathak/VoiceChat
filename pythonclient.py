@@ -25,7 +25,8 @@ BUFMAX = 512
 running = True
 mutex_t = Lock()
 item_available = Condition()
-SLEEPTIME = 0.0001
+# SLEEPTIME = 0.00001
+SLEEPTIME = 0.000001
 audio_available = Condition()
 
 sdstream = sd.Stream(samplerate=44100, channels=1, dtype='float32')
@@ -55,57 +56,39 @@ class SharedBuf:
         return data
 
 
+# record t seconds of audio
 def record(t):
-    # record t seconds of audio
     recorded_array = sdstream.read(t)
-    # print(f"\t\t\t\t\t\t\tAUDIO_INPUT______:{len(recorded_array[0])}")
     return recorded_array[0]
 
 
 def transmit(buf, socket):
-    # buf = [0]*10
-    packet = buf
-    jsn = pickle.dumps(packet)
-    # print(f"_____OUTPUT of length = {sys.getsizeof(jsn)}B, {len(jsn)}Chars")
-    socket.send(jsn)
+    socket.send(pickle.dumps(buf))
 
 
 def record_transmit_thread(serversocket):
-    # maintains a transmit buffer
     print("***** STARTING RECORD TRANSMIT THREAD *****")
     tbuf = SharedBuf()
     global running
 
     def recorder_producer(buf):
         while running:
-            # print("!!! reco loop !!!")
-            # sleep(0.1)
             sleep(SLEEPTIME)
             data = record(32)
             with item_available:
                 item_available.wait_for(lambda: buf.getlen() <= BUFMAX)
-                # produce() # record audio
-                # buf.addbuf(data)
                 buf.extbuf(data)
                 item_available.notify()
         print("RECORDER ENDS HERE")
 
     def transmitter_consumer(buf, serversocket):
         while running:
-            # print("!!! tran loop !!!")
-            # sleep(0.1)
             sleep(SLEEPTIME)
             with item_available:
-                # print(f"buffer len = {buf.getlen()}")
                 item_available.wait_for(lambda: buf.getlen() >= 32)
-                # print(f"length of buffer before transmission = {buf.getlen()}")
-                # consume() # send audio
-
                 transmit(buf.getx(32), serversocket)
                 item_available.notify()
-                # buf.clearbuf()
         print("TRANSMITTER ENDS HERE")
-
 
     rec_thread = Thread(target=recorder_producer, args=(tbuf,))
     tr_thread = Thread(target=transmitter_consumer, args=(tbuf,serversocket))
@@ -118,61 +101,44 @@ def record_transmit_thread(serversocket):
     return
 
 
+# use a sound library to play the buffer
 def play(buf):
-    # use a sound library to play the buffer
-    print(f"\t\t\t\t\t\t\tAUDIO______OUTPUT: {len(buf)}")
     sdstream.write(buf)
 
 
 def receive_play_thread(serversocket):
-    # maintains a play buffer
     print("***** STARTING RECEIVE PLAY THREAD *****")
     rbuf = SharedBuf()
+
     def receiver_producer(buff, serversocket):
+        global running
         jsn = b''
+
         while running:
-            # print("!!! recv loop !!!")
-            # sleep(1)
             sleep(SLEEPTIME)
+
             while sys.getsizeof(jsn) < 314:
                 jsn += serversocket.recv(281)
-
             try:
                 buf = pickle.loads(jsn[:281])
             except pickle.UnpicklingError:
-                print("@@@@@ UNPICKLE ERROR @@@@@")
-                print(f"INPUT______ of len = {sys.getsizeof(jsn)} ::{jsn[:281]}")
+                print(f"    @@@@@ UNPICKLE ERROR @@@@@    INPUT______ of len = {sys.getsizeof(jsn)} ::{jsn[:281]}")
+                continue
+
             jsn = jsn[281:]
-
             with audio_available:
-                print(f">>>>>>>>>>receiver acquired lock. buf length = {buff.getlen()}")
-
                 audio_available.wait_for(lambda: buff.getlen() <= BUFMAX)
-                # produce() # receive audio
-                # print(buf)
                 buff.extbuf(buf)
                 audio_available.notify()
-            print(f"<<<<<<<<<<receiver released lock. buf length = {buff.getlen()}")
         print("RECEIVER ENDS HERE")
 
     def player_consumer(buff):
         while running:
-            # print("!!! play loop !!!")
-            # sleep(1)
             sleep(SLEEPTIME)
-            # b = []
             with audio_available:
-                print(f">>>>>>>>>>player acquired lock. buf length = {buff.getlen()}")
-                # print(f"PLAYER BUF LEN = {buff.getlen()}")
                 audio_available.wait_for(lambda: buff.getlen() >= 32)
-                # consume() # play audio
-                # b.extend(buff.getx(32))
-
                 play(buff.getx(buff.getlen()))
                 audio_available.notify()
-                # buff.clearbuf()
-            # play(b)
-            print(f"<<<<<<<<<<player released lock. buf length = {buff.getlen()}")
         print("PLAYER ENDS HERE")
 
     global running
@@ -190,21 +156,19 @@ def receive_play_thread(serversocket):
 def main():
     serversocket = connect()
     try:
-
         t_thread = Thread(target=record_transmit_thread, args=(serversocket,))
-        # start thread record_transmit
         p_thread = Thread(target=receive_play_thread, args=(serversocket,))
-        # start thread receive_play
-
         t_thread.start()
         p_thread.start()
+
     except KeyboardInterrupt:
-        serversocket.close()
         global running
         running = False
+
         return
     t_thread.join()
     p_thread.join()
+    serversocket.close()
 
 
 def connect():
