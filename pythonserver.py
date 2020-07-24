@@ -3,7 +3,7 @@ from threading import Thread, Lock, Condition
 import pickle
 import socket
 
-SOCK_IP = '10.142.0.1'
+SOCK_IP = '10.142.0.2'
 SOCK_PORT = 9001
 
 class Client:
@@ -20,6 +20,16 @@ class Client:
         self.recipient_name = self.get_recipient_name()
         print(f"received name {self.name} and recipient {self.recipient_name}")
         Client.availableClients[self.name] = self
+        try:
+            self.lobby()
+        except ConnectionResetError:
+            print("CONNECTION RESET ERROR")
+            self.close()
+        except BrokenPipeError:
+            print("BROKEN PIPE. Closing connection")
+            self.close()
+
+    def lobby(self):
         cl = None
         while True:
             try:

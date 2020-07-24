@@ -16,6 +16,7 @@ import pickle
 import numpy as np
 import random
 from Crypto.Cipher import AES
+from socket import timeout
 # socket connect to the server
 
 
@@ -95,7 +96,12 @@ def transmit(buf, socket):
     encrypted_str = encrypt(pickled)
     # decrypted = decrypt(encrypted_str)
     # print(f"PICKLED ___ENC = {decrypted}")
-    socket.send(encrypted_str)
+    try:
+        socket.send(encrypted_str)
+    except timeout:
+        print("SOCKET TIMEOUT")
+        global running
+        running = False
 
 
 def record_transmit_thread(serversocket):
@@ -104,6 +110,7 @@ def record_transmit_thread(serversocket):
     global running
 
     def recorder_producer(buf):
+        global running
         while running:
             sleep(SLEEPTIME)
             data = record(32)
@@ -115,6 +122,7 @@ def record_transmit_thread(serversocket):
         print("RECORDER ENDS HERE")
 
     def transmitter_consumer(buf, serversocket):
+        global running
         while running:
             sleep(SLEEPTIME)
             with item_available:
@@ -143,8 +151,13 @@ def play(buf):
 def receive(socket):
     jsn = b''
     while running:
-        while len(jsn) < 304:
-            jsn += socket.recv(304)
+        while (len(jsn) < 304) and running:
+            try:
+                jsn += socket.recv(304)
+            except timeout:
+                print("SOCKET TIMEOUT")
+                yield None
+
         try:
             dat = jsn[:304]
             # print(len(dat))
@@ -170,6 +183,8 @@ def receive_play_thread(serversocket):
             sleep(SLEEPTIME)
             # while sys.getsizeof(jsn) < 314:
             data = next(rece_generator)
+            if data is None:
+                break
             with audio_available:
                 audio_available.wait_for(lambda: buff.getlen() <= BUFMAX)
                 buff.extbuf(data)
@@ -235,6 +250,7 @@ def connect():
     if val.decode() != 'go':
         raise TypeError
     # returns socket fd
+    s.settimeout(5.0)
     return s
 
 
