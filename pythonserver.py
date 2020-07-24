@@ -75,6 +75,8 @@ class Client:
                 self.send(recipient_obj, self.read())
         except KeyboardInterrupt:
             self.close()
+        except OSError:
+            self.close()
 
     def send(self, cl_object, data):
         cl_object.cl_ptr[0].send(data)
@@ -86,6 +88,7 @@ class Client:
         Client.allClients.remove(self)
         Client.availableClients.pop(self.get_name(), None)
         self.cl_ptr[0].close()
+        print(f"Client {self.name} removed.")
 
 def main():
     serversocket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)

@@ -182,7 +182,10 @@ def receive_play_thread(serversocket):
         while running:
             sleep(SLEEPTIME)
             # while sys.getsizeof(jsn) < 314:
-            data = next(rece_generator)
+            try:
+                data = next(rece_generator)
+            except StopIteration:
+                break
             if data is None:
                 break
             with audio_available:
