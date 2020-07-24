@@ -14,6 +14,8 @@ import sounddevice as sd
 from time import sleep
 import pickle
 import numpy as np
+import random
+from Crypto.Cipher import AES
 # socket connect to the server
 
 
@@ -32,8 +34,32 @@ audio_available = Condition()
 sdstream = sd.Stream(samplerate=44100, channels=1, dtype='float32')
 sdstream.start()
 
+key = b'thisisthepasswordforAESencryptio'
+# random.seed(input("ENTER RANDOM SEED :"))
+random.seed('changethisrandomseed')
+# iv_seed = hash(hash(key))
+# random.seed(iv_seed)
+iv = ''.join([chr(random.randint(0, 0xFF)) for i in range(16)])
+iv = iv.encode()
+cipher = AES.new(key, AES.MODE_CBC, iv[:16])
+# nonce = cipher.nonce
+# ciphertext, tag = cipher.encrypt_and_digest(data)
+def get_iv():
+    return (''.join([chr(random.randint(0, 0xFF)) for i in range(16)])).encode()[:16]
 
+def decrypt(enc_data):
+    cphr = AES.new(key, AES.MODE_CBC, enc_data[:16])
+    decoded = cphr.decrypt(enc_data)[16:]
+    return decoded.rstrip()
 
+def encrypt(data_string):
+    iv = get_iv()
+    cphr = AES.new(key, AES.MODE_CBC, iv)
+    d = iv + data_string
+    d = (d + (' ' * (len(d) % 16)).encode())
+    d = d[:(0 - (len(d) % 16))]
+
+    return cipher.encrypt(d)
 
 class SharedBuf:
     def __init__(self):
@@ -63,7 +89,13 @@ def record(t):
 
 
 def transmit(buf, socket):
-    socket.send(pickle.dumps(buf))
+    # print(f"PICKLED VAL ____ = {pickle.dumps(buf)}")
+    pickled = pickle.dumps(buf)
+    # print(f"PICKLED ______ =  {pickled}")
+    encrypted_str = encrypt(pickled)
+    # decrypted = decrypt(encrypted_str)
+    # print(f"PICKLED ___ENC = {decrypted}")
+    socket.send(encrypted_str)
 
 
 def record_transmit_thread(serversocket):
@@ -79,6 +111,7 @@ def record_transmit_thread(serversocket):
                 item_available.wait_for(lambda: buf.getlen() <= BUFMAX)
                 buf.extbuf(data)
                 item_available.notify()
+
         print("RECORDER ENDS HERE")
 
     def transmitter_consumer(buf, serversocket):
@@ -88,6 +121,7 @@ def record_transmit_thread(serversocket):
                 item_available.wait_for(lambda: buf.getlen() >= 32)
                 transmit(buf.getx(32), serversocket)
                 item_available.notify()
+
         print("TRANSMITTER ENDS HERE")
 
     rec_thread = Thread(target=recorder_producer, args=(tbuf,))
@@ -103,8 +137,27 @@ def record_transmit_thread(serversocket):
 
 # use a sound library to play the buffer
 def play(buf):
+    # print("playing_audio")
     sdstream.write(buf)
 
+def receive(socket):
+    jsn = b''
+    while running:
+        while len(jsn) < 304:
+            jsn += socket.recv(304)
+        try:
+            dat = jsn[:304]
+            # print(len(dat))
+            # print(len(dat) % 16)
+            dat = decrypt(dat)
+            # print(f"DATA RECEIVED = {dat}")
+            buf = pickle.loads(dat)
+
+        except pickle.UnpicklingError:
+            print(f"    @@@@@ UNPICKLE ERROR @@@@@    INPUT______ of len = {sys.getsizeof(jsn)} ::{decrypt(jsn[:304])}")
+            continue
+        jsn = jsn[304:]
+        yield buf
 
 def receive_play_thread(serversocket):
     print("***** STARTING RECEIVE PLAY THREAD *****")
@@ -112,24 +165,16 @@ def receive_play_thread(serversocket):
 
     def receiver_producer(buff, serversocket):
         global running
-        jsn = b''
-
+        rece_generator = receive(serversocket)
         while running:
             sleep(SLEEPTIME)
-
-            while sys.getsizeof(jsn) < 314:
-                jsn += serversocket.recv(281)
-            try:
-                buf = pickle.loads(jsn[:281])
-            except pickle.UnpicklingError:
-                print(f"    @@@@@ UNPICKLE ERROR @@@@@    INPUT______ of len = {sys.getsizeof(jsn)} ::{jsn[:281]}")
-                continue
-
-            jsn = jsn[281:]
+            # while sys.getsizeof(jsn) < 314:
+            data = next(rece_generator)
             with audio_available:
                 audio_available.wait_for(lambda: buff.getlen() <= BUFMAX)
-                buff.extbuf(buf)
+                buff.extbuf(data)
                 audio_available.notify()
+
         print("RECEIVER ENDS HERE")
 
     def player_consumer(buff):
@@ -139,6 +184,7 @@ def receive_play_thread(serversocket):
                 audio_available.wait_for(lambda: buff.getlen() >= 32)
                 play(buff.getx(buff.getlen()))
                 audio_available.notify()
+
         print("PLAYER ENDS HERE")
 
     global running
@@ -147,6 +193,8 @@ def receive_play_thread(serversocket):
     play_thread = Thread(target=player_consumer, args=(rbuf,))
     rece_thread.start()
     play_thread.start()
+    # input("press enter to exit")
+    # running = False
 
     rece_thread.join()
     play_thread.join()
@@ -155,17 +203,13 @@ def receive_play_thread(serversocket):
 
 def main():
     serversocket = connect()
-    try:
-        t_thread = Thread(target=record_transmit_thread, args=(serversocket,))
-        p_thread = Thread(target=receive_play_thread, args=(serversocket,))
-        t_thread.start()
-        p_thread.start()
-
-    except KeyboardInterrupt:
-        global running
-        running = False
-
-        return
+    global running
+    t_thread = Thread(target=record_transmit_thread, args=(serversocket,))
+    p_thread = Thread(target=receive_play_thread, args=(serversocket,))
+    t_thread.start()
+    p_thread.start()
+    input("press enter to exit")
+    running = False
     t_thread.join()
     p_thread.join()
     serversocket.close()

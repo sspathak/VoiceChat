@@ -3,7 +3,7 @@ from threading import Thread, Lock, Condition
 import pickle
 import socket
 
-SOCK_IP = '0.0.0.0'
+SOCK_IP = '10.142.0.1'
 SOCK_PORT = 9001
 
 class Client:
