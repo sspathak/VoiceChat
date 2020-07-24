@@ -85,11 +85,13 @@ class SharedBuf:
 
 # record t seconds of audio
 def record(t):
-    recorded_array = sdstream.read(t)
-    return recorded_array[0]
+    global running
+    if running:
+        return sdstream.read(t)[0]
 
 
 def transmit(buf, socket):
+    global running
     # print(f"PICKLED VAL ____ = {pickle.dumps(buf)}")
     pickled = pickle.dumps(buf)
     # print(f"PICKLED ______ =  {pickled}")
@@ -100,7 +102,9 @@ def transmit(buf, socket):
         socket.send(encrypted_str)
     except timeout:
         print("SOCKET TIMEOUT")
-        global running
+        running = False
+    except BrokenPipeError:
+        print("Recipient disconnected")
         running = False
 
 
@@ -146,7 +150,9 @@ def record_transmit_thread(serversocket):
 # use a sound library to play the buffer
 def play(buf):
     # print("playing_audio")
-    sdstream.write(buf)
+    global running
+    if running:
+        sdstream.write(buf)
 
 def receive(socket):
     jsn = b''
@@ -156,6 +162,9 @@ def receive(socket):
                 jsn += socket.recv(304)
             except timeout:
                 print("SOCKET TIMEOUT")
+                yield None
+            except ConnectionResetError:
+                print("Recipient disconnected")
                 yield None
 
         try:
@@ -228,6 +237,7 @@ def main():
     p_thread.start()
     input("press enter to exit")
     running = False
+    sdstream.stop()
     t_thread.join()
     p_thread.join()
     serversocket.close()
