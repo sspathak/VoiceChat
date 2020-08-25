@@ -1,5 +1,5 @@
 # VoiceChat
-an encrypted voice chat app, written in Python, that uses websockets to send data between a multi-threaded client and server
+An encrypted voice chat app, written in Python, that uses websockets to send data between a multi-threaded client and server
 
 # Setup
 - install python-sounddevice `python3 -m pip install sounddevice --user`
