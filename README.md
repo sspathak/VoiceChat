@@ -7,10 +7,12 @@ An encrypted voice chat app, written in Python, that uses websockets to send dat
 
 ## How do I put the server on the internet?
 ### GCP instructions
-- Create a new compute engine instance - for example F1 Micro - on GCP (*It's free!)
+- Create a new compute engine instance - for example N1 Series' F1 Micro - on GCP (*It's free!)
 - In firewall settings, allow access to port 9001 (and any other port that is being used in the Python server code)
-- Install Python 3.7+ on the server
+- Install Python 3.7+ and pip3   on the server ([link](https://tecadmin.net/how-to-install-python-3-9-on-ubuntu-18-04/), [link](https://linuxize.com/post/how-to-install-pip-on-ubuntu-18.04/))
 - Clone this repository onto the server
+- Install dependencies using `pip3 install -r requirements.txt`
+- Update PYTHONPATH with `export PYTHONPATH=$PYTHONPATH:/path/to/VoiceChat`
 - Run the Python server script
 -- NOTE: you might have to update the SOCK_IP address (line 6, pythonserver.py)
 
