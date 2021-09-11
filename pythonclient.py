@@ -1,66 +1,104 @@
-print("client started")
-print("_________________________________________________________________________________")
-
-# client sends self id
-# client sends recipient id
-# client sends data
-
-
 from threading import Thread, Lock, Condition
-import json
-import sys
 import socket
 import sounddevice as sd
 from time import sleep
 import pickle
 import numpy as np
-import random
 from Crypto.Cipher import AES
+from Crypto.Random import get_random_bytes
 from socket import timeout
+
+MAX_BYTES_SEND = 512  # Must be less than 1024 because of networking limits
+MAX_HEADER_LEN = 20  # allocates 20 bytes to store length of data that is transmitted
+print("client started")
+print("_________________________________________________________________________________")
+
+# client sends self id
+# client sends recipient's id
+# client sends data
+
 # socket connect to the server
 
 
+SERVER_IP = '0.0.0.0'  # Change this to the external IP of the server
 
-SERVER_IP = '35.237.61.15'
-# SERVER_IP = '0.0.0.0'
 SERVER_PORT = 9001
 BUFMAX = 512
 running = True
 mutex_t = Lock()
 item_available = Condition()
-# SLEEPTIME = 0.00001
-SLEEPTIME = 0.000001
+SLEEPTIME = 0.0001  # amount of time CPU sleeps between sending recordings to the server
+# SLEEPTIME = 0.000001
 audio_available = Condition()
 
 sdstream = sd.Stream(samplerate=44100, channels=1, dtype='float32')
 sdstream.start()
 
 key = b'thisisthepasswordforAESencryptio'
-# random.seed(input("ENTER RANDOM SEED :"))
-random.seed('changethisrandomseed')
-# iv_seed = hash(hash(key))
-# random.seed(iv_seed)
-iv = ''.join([chr(random.randint(0, 0xFF)) for i in range(16)])
-iv = iv.encode()
-cipher = AES.new(key, AES.MODE_CBC, iv[:16])
-# nonce = cipher.nonce
-# ciphertext, tag = cipher.encrypt_and_digest(data)
+iv = get_random_bytes(16)
+cipher = AES.new(key, AES.MODE_CBC, iv)
+
+
 def get_iv():
-    return (''.join([chr(random.randint(0, 0xFF)) for i in range(16)])).encode()[:16]
+    return get_random_bytes(16)
+
 
 def decrypt(enc_data):
     cphr = AES.new(key, AES.MODE_CBC, enc_data[:16])
     decoded = cphr.decrypt(enc_data)[16:]
     return decoded.rstrip()
 
+
 def encrypt(data_string):
     iv = get_iv()
-    cphr = AES.new(key, AES.MODE_CBC, iv)
+    # cphr = AES.new(key, AES.MODE_CBC, iv)
     d = iv + data_string
     d = (d + (' ' * (len(d) % 16)).encode())
-    d = d[:(0 - (len(d) % 16))]
-
     return cipher.encrypt(d)
+
+
+def split_send_bytes(s, inp):
+    data_len = (len(inp))
+    if data_len == 0:
+        print('ERROR: trying to send 0 bytes')  # should not happen in theory but threads are weird
+        return
+
+    # tells the client on the other end how many bytes it's expecting to receive
+    header = str(data_len).encode('utf8')
+    header_builder = b'0' * (MAX_HEADER_LEN - len(header)) + header
+    s.send(header_builder)
+
+    # send content in small batches. Maximum value of MAX_BYTES_SEND is 1024
+    for i in range(data_len // MAX_BYTES_SEND):
+        s.send(inp[i * MAX_BYTES_SEND:i * MAX_BYTES_SEND + MAX_BYTES_SEND])
+
+    # send any remaining data
+    if data_len % MAX_BYTES_SEND != 0:
+        s.send(inp[-(data_len % MAX_BYTES_SEND):])
+
+
+def split_recv_bytes(s):
+    dat = b''
+
+    # receive header that specifies number of incoming bytes
+    data_len_raw = s.recv(MAX_HEADER_LEN)
+    try:
+        data_len = int((data_len_raw).decode('utf8'))
+    except UnicodeDecodeError as e:
+        print(data_len_raw)
+        raise e
+    while data_len == 0:
+        print(f"received 0 bytes. raw = {data_len_raw}")  # should never happen
+        data_len = int((s.recv(MAX_BYTES_SEND)).decode('utf8'))
+
+    # read bytes
+    for i in range(data_len // MAX_BYTES_SEND):
+        dat += s.recv(MAX_BYTES_SEND)
+    if data_len % MAX_BYTES_SEND != 0:
+        dat += s.recv(data_len % MAX_BYTES_SEND)
+
+    return dat
+
 
 class SharedBuf:
     def __init__(self):
@@ -71,12 +109,16 @@ class SharedBuf:
 
     def addbuf(self, arr):
         self.buffer = np.append(self.buffer, arr)
+
     def extbuf(self, arr):
         self.buffer = np.append(self.buffer, arr)
+
     def getlen(self):
         return len(self.buffer)
+
     def getbuf(self):
         return self.buffer
+
     def getx(self, x):
         data = self.buffer[0:x]
         self.buffer = self.buffer[x:]
@@ -92,14 +134,11 @@ def record(t):
 
 def transmit(buf, socket):
     global running
-    # print(f"PICKLED VAL ____ = {pickle.dumps(buf)}")
-    pickled = pickle.dumps(buf)
-    # print(f"PICKLED ______ =  {pickled}")
+    pickled = buf.tobytes()
     encrypted_str = encrypt(pickled)
-    # decrypted = decrypt(encrypted_str)
-    # print(f"PICKLED ___ENC = {decrypted}")
+
     try:
-        socket.send(encrypted_str)
+        split_send_bytes(socket, encrypted_str)
     except timeout:
         print("SOCKET TIMEOUT")
         running = False
@@ -137,7 +176,7 @@ def record_transmit_thread(serversocket):
         print("TRANSMITTER ENDS HERE")
 
     rec_thread = Thread(target=recorder_producer, args=(tbuf,))
-    tr_thread = Thread(target=transmitter_consumer, args=(tbuf,serversocket))
+    tr_thread = Thread(target=transmitter_consumer, args=(tbuf, serversocket))
 
     rec_thread.start()
     tr_thread.start()
@@ -154,32 +193,25 @@ def play(buf):
     if running:
         sdstream.write(buf)
 
+
 def receive(socket):
-    jsn = b''
+    global running
     while running:
-        while (len(jsn) < 304) and running:
-            try:
-                jsn += socket.recv(304)
-            except timeout:
-                print("SOCKET TIMEOUT")
-                yield None
-            except ConnectionResetError:
-                print("Recipient disconnected")
-                yield None
-
         try:
-            dat = jsn[:304]
-            # print(len(dat))
-            # print(len(dat) % 16)
+            dat = split_recv_bytes(socket)
             dat = decrypt(dat)
-            # print(f"DATA RECEIVED = {dat}")
-            buf = pickle.loads(dat)
-
-        except pickle.UnpicklingError:
-            print(f"    @@@@@ UNPICKLE ERROR @@@@@    INPUT______ of len = {sys.getsizeof(jsn)} ::{decrypt(jsn[:304])}")
+            buf = np.frombuffer(dat, dtype='float32')  # read decrypted numpy array
+            yield buf
+        except pickle.UnpicklingError as e:
+            print(f"    @@@@@ UNPICKLE ERROR @@@@@   \n DATA RECEIVED {len(dat)} :: {dat}")  # INPUT______ of len = {sys.getsizeof(dat)} ::{decrypt(dat)} :: {str(e)}")
             continue
-        jsn = jsn[304:]
-        yield buf
+        except timeout:
+            print("SOCKET TIMEOUT")
+            yield None
+        except ConnectionResetError:
+            print("Recipient disconnected")
+            yield None
+
 
 def receive_play_thread(serversocket):
     print("***** STARTING RECEIVE PLAY THREAD *****")
@@ -190,7 +222,6 @@ def receive_play_thread(serversocket):
         rece_generator = receive(serversocket)
         while running:
             sleep(SLEEPTIME)
-            # while sys.getsizeof(jsn) < 314:
             try:
                 data = next(rece_generator)
             except StopIteration:
@@ -216,7 +247,7 @@ def receive_play_thread(serversocket):
 
     global running
 
-    rece_thread = Thread(target=receiver_producer,args=(rbuf, serversocket))
+    rece_thread = Thread(target=receiver_producer, args=(rbuf, serversocket))
     play_thread = Thread(target=player_consumer, args=(rbuf,))
     rece_thread.start()
     play_thread.start()
@@ -253,11 +284,11 @@ def connect():
 
     source_name = str(input("enter source name :"))
     print(f"hello {source_name}")
-    print(f"message length = {len((source_name + (' '*(512-len(source_name)))).encode())}")
-    s.send((source_name + (' '*(512-len(source_name)))).encode())
+    print(f"message length = {len((source_name + (' ' * (512 - len(source_name)))).encode())}")
+    s.send((source_name + (' ' * (512 - len(source_name)))).encode())
 
     destination_name = str(input("enter destination name :"))
-    s.send((destination_name + (' '*(512-len(destination_name)))).encode())
+    s.send((destination_name + (' ' * (512 - len(destination_name)))).encode())
     sleep(2)
     val = s.recv(2)
     if val.decode() != 'go':

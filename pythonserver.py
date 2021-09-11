@@ -3,8 +3,9 @@ from threading import Thread, Lock, Condition
 import pickle
 import socket
 
-SOCK_IP = '10.142.0.2'
+SOCK_IP = '0.0.0.0'  # internal IP  of the server
 SOCK_PORT = 9001
+
 
 class Client:
     allClients = []
@@ -85,7 +86,10 @@ class Client:
         return self.cl_ptr[0].recv(1024)
 
     def close(self):
-        Client.allClients.remove(self)
+        try:
+            Client.allClients.remove(self)
+        except ValueError:
+            print("Client does not exist in 'allClients' array")
         Client.availableClients.pop(self.get_name(), None)
         self.cl_ptr[0].close()
         print(f"Client {self.name} removed.")
