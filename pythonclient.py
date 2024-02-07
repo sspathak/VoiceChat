@@ -2,11 +2,11 @@ from threading import Thread, Lock, Condition
 import socket
 import sounddevice as sd
 from time import sleep
-import pickle
 import numpy as np
 from Crypto.Cipher import AES
 from Crypto.Random import get_random_bytes
 from socket import timeout
+from Crypto.Util.Padding import pad, unpad
 
 MAX_BYTES_SEND = 512  # Must be less than 1024 because of networking limits
 MAX_HEADER_LEN = 20  # allocates 20 bytes to store length of data that is transmitted
@@ -27,16 +27,23 @@ BUFMAX = 512
 running = True
 mutex_t = Lock()
 item_available = Condition()
-SLEEPTIME = 0.0001  # amount of time CPU sleeps between sending recordings to the server
-# SLEEPTIME = 0.000001
+# SLEEPTIME = 0.0  # amount of time CPU sleeps between sending recordings to the server
+SLEEPTIME = 0.0000001
+AUDIO_DTYPE = 'float32'
 audio_available = Condition()
+debug_counter_mod = DCM =1000
+TX_BATCH_SIZE = 128
+RECORDING_SIZE = 64
+SAMPLE_RATE = 44100
 
-sdstream = sd.Stream(samplerate=44100, channels=1, dtype='float32')
+sdstream = sd.Stream(samplerate=SAMPLE_RATE, channels=1, dtype=AUDIO_DTYPE)
+
 sdstream.start()
 
 key = b'thisisthepasswordforAESencryptio'
 iv = get_random_bytes(16)
 cipher = AES.new(key, AES.MODE_CBC, iv)
+cphr = None
 
 
 def get_iv():
@@ -44,8 +51,11 @@ def get_iv():
 
 
 def decrypt(enc_data):
-    cphr = AES.new(key, AES.MODE_CBC, enc_data[:16])
-    decoded = cphr.decrypt(enc_data)[16:]
+    global cphr
+    if cphr is None:
+        cphr = AES.new(key, AES.MODE_CBC, enc_data[:16])
+    # decoded = cphr.decrypt(enc_data)[16:]
+    decoded = unpad(cphr.decrypt(enc_data)[16:], AES.block_size)
     return decoded.rstrip()
 
 
@@ -53,8 +63,8 @@ def encrypt(data_string):
     iv = get_iv()
     # cphr = AES.new(key, AES.MODE_CBC, iv)
     d = iv + data_string
-    d = (d + (' ' * (len(d) % 16)).encode())
-    return cipher.encrypt(d)
+    d = (d + (' ' * (len(d) % 32)).encode())
+    return cipher.encrypt(pad(d, AES.block_size))
 
 
 def split_send_bytes(s, inp):
@@ -85,7 +95,7 @@ def split_recv_bytes(s):
     try:
         data_len = int((data_len_raw).decode('utf8'))
     except UnicodeDecodeError as e:
-        print(data_len_raw)
+        # print(data_len_raw)
         raise e
     while data_len == 0:
         print(f"received 0 bytes. raw = {data_len_raw}")  # should never happen
@@ -102,7 +112,7 @@ def split_recv_bytes(s):
 
 class SharedBuf:
     def __init__(self):
-        self.buffer = np.array([], dtype='float32')
+        self.buffer = np.array([], dtype=AUDIO_DTYPE)
 
     def clearbuf(self):
         self.buffer = []
@@ -155,10 +165,11 @@ def record_transmit_thread(serversocket):
     def recorder_producer(buf):
         global running
         while running:
+            # print("🩷")
             sleep(SLEEPTIME)
-            data = record(32)
+            data = record(RECORDING_SIZE)
             with item_available:
-                item_available.wait_for(lambda: buf.getlen() <= BUFMAX)
+                item_available.wait_for(lambda: buf.getlen() <= BUFMAX*4)
                 buf.extbuf(data)
                 item_available.notify()
 
@@ -167,10 +178,11 @@ def record_transmit_thread(serversocket):
     def transmitter_consumer(buf, serversocket):
         global running
         while running:
+            # print("💛")
             sleep(SLEEPTIME)
             with item_available:
-                item_available.wait_for(lambda: buf.getlen() >= 32)
-                transmit(buf.getx(32), serversocket)
+                item_available.wait_for(lambda: buf.getlen() >= TX_BATCH_SIZE)
+                transmit(buf.getx(TX_BATCH_SIZE), serversocket)
                 item_available.notify()
 
         print("TRANSMITTER ENDS HERE")
@@ -196,18 +208,19 @@ def play(buf):
 
 def receive(socket):
     global running
+    buf = None
     while running:
         try:
             dat = split_recv_bytes(socket)
+
             dat = decrypt(dat)
-            buf = np.frombuffer(dat, dtype='float32')  # read decrypted numpy array
+            buf = np.frombuffer(dat, dtype=AUDIO_DTYPE)  # read decrypted numpy array
             yield buf
-        except pickle.UnpicklingError as e:
-            print(f"    @@@@@ UNPICKLE ERROR @@@@@   \n DATA RECEIVED {len(dat)} :: {dat}")  # INPUT______ of len = {sys.getsizeof(dat)} ::{decrypt(dat)} :: {str(e)}")
-            continue
         except timeout:
             print("SOCKET TIMEOUT")
             yield None
+        except ValueError:
+            yield buf
         except ConnectionResetError:
             print("Recipient disconnected")
             yield None
@@ -220,16 +233,22 @@ def receive_play_thread(serversocket):
     def receiver_producer(buff, serversocket):
         global running
         rece_generator = receive(serversocket)
+
+        old_data = None
+        data = None
         while running:
+            # print("💚")
             sleep(SLEEPTIME)
             try:
                 data = next(rece_generator)
+                data = next(rece_generator)
             except StopIteration:
-                break
+                pass
+
             if data is None:
                 break
             with audio_available:
-                audio_available.wait_for(lambda: buff.getlen() <= BUFMAX)
+                audio_available.wait_for(lambda: buff.getlen() <= BUFMAX*4)
                 buff.extbuf(data)
                 audio_available.notify()
 
@@ -237,10 +256,13 @@ def receive_play_thread(serversocket):
 
     def player_consumer(buff):
         while running:
+            # print("💙")
             sleep(SLEEPTIME)
             with audio_available:
                 audio_available.wait_for(lambda: buff.getlen() >= 32)
-                play(buff.getx(buff.getlen()))
+                # play(buff.getx(buff.getlen()))
+                # play(buff.getx(32))
+                play(np.array([0.1, 0.2, 0.3, 0.4, 0.5, 0.6 ]).astype(AUDIO_DTYPE))
                 audio_available.notify()
 
         print("PLAYER ENDS HERE")
@@ -280,6 +302,7 @@ def connect():
     global SERVER_PORT
     global destination_name
     s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+
     s.connect((SERVER_IP, SERVER_PORT))
 
     source_name = str(input("enter source name :"))
