@@ -23,24 +23,22 @@ print("_________________________________________________________________________
 SERVER_IP = '0.0.0.0'  # Change this to the external IP of the server
 
 SERVER_PORT = 9001
-BUFMAX = 512
 running = True
-mutex_t = Lock()
 item_available = Condition()
 # amount of time CPU sleeps between sending recordings to the server
 SLEEPTIME = 0.001
 AUDIO_DTYPE = 'float32'
 audio_available = Condition()
 # number of bytes to send over network in one go
-TX_BATCH_SIZE = 256
+TX_BATCH_SIZE = 64
 # number of samples to record
 RECORDING_SIZE = TX_BATCH_SIZE*2
 # sample rate of the audio
 SAMPLE_RATE = 44100
 # size of the shared buffer
-SHARED_BUF_SIZE = RECORDING_SIZE*32
+SHARED_BUF_SIZE = RECORDING_SIZE*64
 # player consumer will wait until this many bytes are available in the buffer before playing
-PLAYER_READ_LAG_SIZE = TX_BATCH_SIZE*4
+PLAYER_READ_LAG_SIZE = RECORDING_SIZE*32
 # number of bytes to read from the buffer for playback
 PLAYER_READ_BYTE_SIZE = RECORDING_SIZE
 
@@ -280,7 +278,7 @@ def receive_play_thread(serversocket):
                 pass
 
             if data is None:
-                break
+                continue
             with audio_available:
                 # producer does not wait for the buffer to be emptied and just overwrites it if it is full
                 buff.extbuf(data)
