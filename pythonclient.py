@@ -27,16 +27,21 @@ BUFMAX = 512
 running = True
 mutex_t = Lock()
 item_available = Condition()
-# SLEEPTIME = 0.0  # amount of time CPU sleeps between sending recordings to the server
+# amount of time CPU sleeps between sending recordings to the server
 SLEEPTIME = 0.001
 AUDIO_DTYPE = 'float32'
 audio_available = Condition()
-debug_counter_mod = DCM =1000
+# number of bytes to send over network in one go
 TX_BATCH_SIZE = 256
+# number of samples to record
 RECORDING_SIZE = TX_BATCH_SIZE*2
+# sample rate of the audio
 SAMPLE_RATE = 44100
+# size of the shared buffer
 SHARED_BUF_SIZE = RECORDING_SIZE*32
+# player consumer will wait until this many bytes are available in the buffer before playing
 PLAYER_READ_LAG_SIZE = TX_BATCH_SIZE*4
+# number of bytes to read from the buffer for playback
 PLAYER_READ_BYTE_SIZE = RECORDING_SIZE
 
 
@@ -44,13 +49,8 @@ assert(PLAYER_READ_LAG_SIZE >= PLAYER_READ_BYTE_SIZE)
 assert(SHARED_BUF_SIZE >= PLAYER_READ_LAG_SIZE)
 assert(RECORDING_SIZE <= SHARED_BUF_SIZE)
 
-# sdstream = sd.Stream(samplerate=SAMPLE_RATE, channels=1, dtype=AUDIO_DTYPE)
-sd_in_stream = sd.InputStream(samplerate=SAMPLE_RATE, channels=1, dtype=AUDIO_DTYPE)
-sd_out_stream = sd.OutputStream(samplerate=SAMPLE_RATE, channels=1, dtype=AUDIO_DTYPE)
-
-# sdstream.start()
-sd_in_stream.start()
-sd_out_stream.start()
+sdstream = sd.Stream(samplerate=SAMPLE_RATE, channels=1, dtype=AUDIO_DTYPE)
+sdstream.start()
 
 key = b'thisisthepasswordforAESencryptio'
 iv = get_random_bytes(16)
@@ -174,11 +174,10 @@ class SharedBuf:
 def record(t):
     global running
     if running:
-        recorded = sd_in_stream.read(t)[0]
+        recorded = sdstream.read(t)[0]
         return recorded
 
 
-prev_transmit = None
 def transmit(buf, socket):
     global running
     pickled = buf.tobytes()
@@ -203,9 +202,11 @@ def record_transmit_thread(serversocket):
         global running
         while running:
             sleep(SLEEPTIME/100)
+            # record does not need a lock because it is not a shared resource
             data = record(RECORDING_SIZE)
             if data is not None:
                 with item_available:
+                    # if buffer is full, wait for it to be emptied
                     if item_available.wait_for(lambda: buf.getlen() <= SHARED_BUF_SIZE, timeout=2):
                         buf.extbuf(data)
                     item_available.notify()
@@ -216,6 +217,7 @@ def record_transmit_thread(serversocket):
         while running:
             sleep(SLEEPTIME)
             with item_available:
+                # if buffer is empty, wait for it to be filled
                 item_available.wait_for(lambda: buf.getlen() >= TX_BATCH_SIZE, timeout=2)
                 payload = buf.getx(TX_BATCH_SIZE)
                 item_available.notify()
@@ -236,14 +238,9 @@ def record_transmit_thread(serversocket):
 
 # use a sound library to play the buffer
 def play(buf):
-    # print("playing_audio")
     global running
     if running:
-        # sdstream.write(buf)
-        # print(sd_out_stream.write_available)
-        playback_time = len(buf) / SAMPLE_RATE
-        sd_out_stream.write(buf)
-        # sleep(playback_time)
+        sdstream.write(buf)
 
 
 prev_receive = -1
@@ -253,7 +250,6 @@ def receive(socket):
     while running:
         try:
             dat = split_recv_bytes(socket)
-
             dat = decrypt(dat)
             buf = np.frombuffer(dat, dtype=AUDIO_DTYPE)  # read decrypted numpy array
             yield buf
@@ -277,7 +273,6 @@ def receive_play_thread(serversocket):
 
         data = None
         while running:
-            # print("💚")
             sleep(SLEEPTIME)
             try:
                 data = next(rece_generator)
@@ -287,6 +282,7 @@ def receive_play_thread(serversocket):
             if data is None:
                 break
             with audio_available:
+                # producer does not wait for the buffer to be emptied and just overwrites it if it is full
                 buff.extbuf(data)
                 audio_available.notify()
 
@@ -298,9 +294,10 @@ def receive_play_thread(serversocket):
 
             with audio_available:
                 if buff.getlen() < PLAYER_READ_BYTE_SIZE:
+                    # if buffer is empty, wait for it to be filled
                     audio_available.wait_for(lambda: buff.getlen() >= PLAYER_READ_LAG_SIZE, timeout=2)
                 read_aud = buff.getx(PLAYER_READ_BYTE_SIZE)
-            # playback does not need lock because it is not a shared resource
+            # playback does not need a lock because it is not a shared resource
             play(read_aud)
 
         print("PLAYER ENDS HERE")
@@ -311,9 +308,6 @@ def receive_play_thread(serversocket):
     play_thread = Thread(target=player_consumer, args=(rbuf,))
     rece_thread.start()
     play_thread.start()
-    # input("press enter to exit")
-    # running = False
-
     rece_thread.join()
     play_thread.join()
     return
@@ -328,9 +322,7 @@ def main():
     p_thread.start()
     input("press enter to exit")
     running = False
-    # sdstream.stop()
-    sd_in_stream.stop()
-    sd_out_stream.stop()
+    sdstream.stop()
     t_thread.join()
     p_thread.join()
     serversocket.close()
