@@ -28,17 +28,29 @@ running = True
 mutex_t = Lock()
 item_available = Condition()
 # SLEEPTIME = 0.0  # amount of time CPU sleeps between sending recordings to the server
-SLEEPTIME = 0.0000001
+SLEEPTIME = 0.001
 AUDIO_DTYPE = 'float32'
 audio_available = Condition()
 debug_counter_mod = DCM =1000
-TX_BATCH_SIZE = 128
-RECORDING_SIZE = 64
+TX_BATCH_SIZE = 256
+RECORDING_SIZE = TX_BATCH_SIZE*2
 SAMPLE_RATE = 44100
+SHARED_BUF_SIZE = RECORDING_SIZE*32
+PLAYER_READ_LAG_SIZE = TX_BATCH_SIZE*4
+PLAYER_READ_BYTE_SIZE = RECORDING_SIZE
 
-sdstream = sd.Stream(samplerate=SAMPLE_RATE, channels=1, dtype=AUDIO_DTYPE)
 
-sdstream.start()
+assert(PLAYER_READ_LAG_SIZE >= PLAYER_READ_BYTE_SIZE)
+assert(SHARED_BUF_SIZE >= PLAYER_READ_LAG_SIZE)
+assert(RECORDING_SIZE <= SHARED_BUF_SIZE)
+
+# sdstream = sd.Stream(samplerate=SAMPLE_RATE, channels=1, dtype=AUDIO_DTYPE)
+sd_in_stream = sd.InputStream(samplerate=SAMPLE_RATE, channels=1, dtype=AUDIO_DTYPE)
+sd_out_stream = sd.OutputStream(samplerate=SAMPLE_RATE, channels=1, dtype=AUDIO_DTYPE)
+
+# sdstream.start()
+sd_in_stream.start()
+sd_out_stream.start()
 
 key = b'thisisthepasswordforAESencryptio'
 iv = get_random_bytes(16)
@@ -111,37 +123,68 @@ def split_recv_bytes(s):
 
 
 class SharedBuf:
-    def __init__(self):
-        self.buffer = np.array([], dtype=AUDIO_DTYPE)
+    def __init__(self, size=0):
+        self.size = size
+        self.read_cursor = 0
+        self.write_cursor = 0
+        self.buffer = np.array([0] * size, dtype=AUDIO_DTYPE)
+        self.mutex = Lock()
 
     def clearbuf(self):
-        self.buffer = []
-
-    def addbuf(self, arr):
-        self.buffer = np.append(self.buffer, arr)
+        with self.mutex:
+            self.buffer = np.array([0] * self.size, dtype=AUDIO_DTYPE)
+            self.read_cursor = 0
+            self.write_cursor = 0
 
     def extbuf(self, arr):
-        self.buffer = np.append(self.buffer, arr)
+        arr = arr.reshape(-1)
+        # self.buffer = np.append(self.buffer, arr)
+        arr_len = len(arr)
+        # if ar is too long, truncate it
+        if arr_len > self.size:
+            arr = arr[-self.size:]
+            arr_len = self.size
+        with self.mutex:
+            # loop around the buffer if not enough space
+            if arr_len + self.write_cursor > self.size:
+                self.buffer[self.write_cursor:] = arr[:self.size - self.write_cursor]
+                self.buffer[:arr_len - (self.size - self.write_cursor)] = arr[self.size - self.write_cursor:]
+            else:
+                self.buffer[self.write_cursor:self.write_cursor + arr_len] = arr
+            # update write cursor
+            self.write_cursor = (self.write_cursor + arr_len) % self.size
 
     def getlen(self):
-        return len(self.buffer)
+        with self.mutex:
+            if self.write_cursor >= self.read_cursor:
+                return self.write_cursor - self.read_cursor
+            else:
+                return self.size - self.read_cursor + self.write_cursor
 
     def getbuf(self):
         return self.buffer
 
     def getx(self, x):
-        data = self.buffer[0:x]
-        self.buffer = self.buffer[x:]
-        return data
+        with self.mutex:
+            # read x bytes from the buffer
+            if self.read_cursor + x > self.size:
+                ret = np.append(self.buffer[self.read_cursor:], self.buffer[:self.read_cursor + x - self.size])
+            else:
+                ret = self.buffer[self.read_cursor:self.read_cursor + x][:]
+            self.read_cursor = (self.read_cursor + x) % self.size
+            return ret
 
 
-# record t seconds of audio
+
+# record t bytes of audio
 def record(t):
     global running
     if running:
-        return sdstream.read(t)[0]
+        recorded = sd_in_stream.read(t)[0]
+        return recorded
 
 
+prev_transmit = None
 def transmit(buf, socket):
     global running
     pickled = buf.tobytes()
@@ -159,31 +202,30 @@ def transmit(buf, socket):
 
 def record_transmit_thread(serversocket):
     print("***** STARTING RECORD TRANSMIT THREAD *****")
-    tbuf = SharedBuf()
+    tbuf = SharedBuf(SHARED_BUF_SIZE)
     global running
 
     def recorder_producer(buf):
         global running
         while running:
-            # print("🩷")
-            sleep(SLEEPTIME)
+            sleep(SLEEPTIME/100)
             data = record(RECORDING_SIZE)
-            with item_available:
-                item_available.wait_for(lambda: buf.getlen() <= BUFMAX*4)
-                buf.extbuf(data)
-                item_available.notify()
-
+            if data:
+                with item_available:
+                    if item_available.wait_for(lambda: buf.getlen() <= SHARED_BUF_SIZE, timeout=0.5):
+                        buf.extbuf(data)
+                    item_available.notify()
         print("RECORDER ENDS HERE")
 
     def transmitter_consumer(buf, serversocket):
         global running
         while running:
-            # print("💛")
             sleep(SLEEPTIME)
             with item_available:
                 item_available.wait_for(lambda: buf.getlen() >= TX_BATCH_SIZE)
-                transmit(buf.getx(TX_BATCH_SIZE), serversocket)
+                payload = buf.getx(TX_BATCH_SIZE)
                 item_available.notify()
+            transmit(payload, serversocket)
 
         print("TRANSMITTER ENDS HERE")
 
@@ -203,9 +245,14 @@ def play(buf):
     # print("playing_audio")
     global running
     if running:
-        sdstream.write(buf)
+        # sdstream.write(buf)
+        # print(sd_out_stream.write_available)
+        playback_time = len(buf) / SAMPLE_RATE
+        sd_out_stream.write(buf)
+        # sleep(playback_time)
 
 
+prev_receive = -1
 def receive(socket):
     global running
     buf = None
@@ -228,19 +275,17 @@ def receive(socket):
 
 def receive_play_thread(serversocket):
     print("***** STARTING RECEIVE PLAY THREAD *****")
-    rbuf = SharedBuf()
+    rbuf = SharedBuf(SHARED_BUF_SIZE)
 
     def receiver_producer(buff, serversocket):
         global running
         rece_generator = receive(serversocket)
 
-        old_data = None
         data = None
         while running:
             # print("💚")
             sleep(SLEEPTIME)
             try:
-                data = next(rece_generator)
                 data = next(rece_generator)
             except StopIteration:
                 pass
@@ -248,7 +293,6 @@ def receive_play_thread(serversocket):
             if data is None:
                 break
             with audio_available:
-                audio_available.wait_for(lambda: buff.getlen() <= BUFMAX*4)
                 buff.extbuf(data)
                 audio_available.notify()
 
@@ -256,14 +300,14 @@ def receive_play_thread(serversocket):
 
     def player_consumer(buff):
         while running:
-            # print("💙")
-            sleep(SLEEPTIME)
+            sleep(SLEEPTIME/100)
+
             with audio_available:
-                audio_available.wait_for(lambda: buff.getlen() >= 32)
-                # play(buff.getx(buff.getlen()))
-                # play(buff.getx(32))
-                play(np.array([0.1, 0.2, 0.3, 0.4, 0.5, 0.6 ]).astype(AUDIO_DTYPE))
-                audio_available.notify()
+                if buff.getlen() < PLAYER_READ_BYTE_SIZE:
+                    audio_available.wait_for(lambda: buff.getlen() >= PLAYER_READ_LAG_SIZE)
+                read_aud = buff.getx(PLAYER_READ_BYTE_SIZE)
+            # playback does not need lock because it is not a shared resource
+            play(read_aud)
 
         print("PLAYER ENDS HERE")
 
@@ -290,7 +334,9 @@ def main():
     p_thread.start()
     input("press enter to exit")
     running = False
-    sdstream.stop()
+    # sdstream.stop()
+    sd_in_stream.stop()
+    sd_out_stream.stop()
     t_thread.join()
     p_thread.join()
     serversocket.close()
