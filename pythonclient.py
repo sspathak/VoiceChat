@@ -128,51 +128,45 @@ class SharedBuf:
         self.read_cursor = 0
         self.write_cursor = 0
         self.buffer = np.array([0] * size, dtype=AUDIO_DTYPE)
-        self.mutex = Lock()
 
     def clearbuf(self):
-        with self.mutex:
-            self.buffer = np.array([0] * self.size, dtype=AUDIO_DTYPE)
-            self.read_cursor = 0
-            self.write_cursor = 0
+        self.buffer = np.array([0] * self.size, dtype=AUDIO_DTYPE)
+        self.read_cursor = 0
+        self.write_cursor = 0
 
     def extbuf(self, arr):
         arr = arr.reshape(-1)
-        # self.buffer = np.append(self.buffer, arr)
         arr_len = len(arr)
         # if ar is too long, truncate it
         if arr_len > self.size:
             arr = arr[-self.size:]
             arr_len = self.size
-        with self.mutex:
-            # loop around the buffer if not enough space
-            if arr_len + self.write_cursor > self.size:
-                self.buffer[self.write_cursor:] = arr[:self.size - self.write_cursor]
-                self.buffer[:arr_len - (self.size - self.write_cursor)] = arr[self.size - self.write_cursor:]
-            else:
-                self.buffer[self.write_cursor:self.write_cursor + arr_len] = arr
-            # update write cursor
-            self.write_cursor = (self.write_cursor + arr_len) % self.size
+        # loop around the buffer if not enough space
+        if arr_len + self.write_cursor > self.size:
+            self.buffer[self.write_cursor:] = arr[:self.size - self.write_cursor]
+            self.buffer[:arr_len - (self.size - self.write_cursor)] = arr[self.size - self.write_cursor:]
+        else:
+            self.buffer[self.write_cursor:self.write_cursor + arr_len] = arr
+        # update write cursor
+        self.write_cursor = (self.write_cursor + arr_len) % self.size
 
     def getlen(self):
-        with self.mutex:
-            if self.write_cursor >= self.read_cursor:
-                return self.write_cursor - self.read_cursor
-            else:
-                return self.size - self.read_cursor + self.write_cursor
+        if self.write_cursor >= self.read_cursor:
+            return self.write_cursor - self.read_cursor
+        else:
+            return self.size - self.read_cursor + self.write_cursor
 
     def getbuf(self):
         return self.buffer
 
     def getx(self, x):
-        with self.mutex:
-            # read x bytes from the buffer
-            if self.read_cursor + x > self.size:
-                ret = np.append(self.buffer[self.read_cursor:], self.buffer[:self.read_cursor + x - self.size])
-            else:
-                ret = self.buffer[self.read_cursor:self.read_cursor + x][:]
-            self.read_cursor = (self.read_cursor + x) % self.size
-            return ret
+        # read x bytes from the buffer
+        if self.read_cursor + x > self.size:
+            ret = np.append(self.buffer[self.read_cursor:], self.buffer[:self.read_cursor + x - self.size])
+        else:
+            ret = self.buffer[self.read_cursor:self.read_cursor + x][:]
+        self.read_cursor = (self.read_cursor + x) % self.size
+        return ret
 
 
 
@@ -210,9 +204,9 @@ def record_transmit_thread(serversocket):
         while running:
             sleep(SLEEPTIME/100)
             data = record(RECORDING_SIZE)
-            if data:
+            if data is not None:
                 with item_available:
-                    if item_available.wait_for(lambda: buf.getlen() <= SHARED_BUF_SIZE, timeout=0.5):
+                    if item_available.wait_for(lambda: buf.getlen() <= SHARED_BUF_SIZE, timeout=2):
                         buf.extbuf(data)
                     item_available.notify()
         print("RECORDER ENDS HERE")
@@ -222,7 +216,7 @@ def record_transmit_thread(serversocket):
         while running:
             sleep(SLEEPTIME)
             with item_available:
-                item_available.wait_for(lambda: buf.getlen() >= TX_BATCH_SIZE)
+                item_available.wait_for(lambda: buf.getlen() >= TX_BATCH_SIZE, timeout=2)
                 payload = buf.getx(TX_BATCH_SIZE)
                 item_available.notify()
             transmit(payload, serversocket)
@@ -304,7 +298,7 @@ def receive_play_thread(serversocket):
 
             with audio_available:
                 if buff.getlen() < PLAYER_READ_BYTE_SIZE:
-                    audio_available.wait_for(lambda: buff.getlen() >= PLAYER_READ_LAG_SIZE)
+                    audio_available.wait_for(lambda: buff.getlen() >= PLAYER_READ_LAG_SIZE, timeout=2)
                 read_aud = buff.getx(PLAYER_READ_BYTE_SIZE)
             # playback does not need lock because it is not a shared resource
             play(read_aud)
