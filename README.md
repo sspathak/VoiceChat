@@ -6,6 +6,7 @@ An encrypted voice chat app, written in Python, that uses websockets to send dat
 - install numpy `pip install numpy`
 
 ## How do I put the server on the internet?
+- [YouTube Video link](https://www.youtube.com/watch?v=EIVwWbLopVw)
 ### GCP instructions
 - Create a new compute engine instance - for example N1 Series' F1 Micro - on GCP (*It's free!)
 - In firewall settings, allow access to port 9001 (and any other port that is being used in the Python server code)
